@@ -484,13 +484,6 @@ class ForumTracker:
             warn(f"session.get error: {e}")
             raise
 
-    def get(self, url: str, **kwargs):
-        try:
-            return self.session.get(url, **kwargs)
-        except Exception as e:
-            warn(f"session.get error: {e}")
-            raise
-
     def react_to_post(self, post_url: str, reaction_id: int):
         """
         Поставить реакцию на пост в форуме.
