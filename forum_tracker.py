@@ -355,9 +355,6 @@ class ForumTracker:
     # Утилиты доступа к сети через session
     # -----------------------------------------------------------------
     def fetch_html(self, url: str, timeout: int = 15) -> str:
-        """
-        Загрузить HTML используя self.session (с куками).
-        """
         if not url:
             return ""
 
@@ -368,102 +365,43 @@ class ForumTracker:
 
         debug(f"[FETCH] GET {url}")
         try:
-            # ФИКС ДЛЯ UNICODE: чистим заголовки от русских символов
-            from urllib.parse import quote, urlparse, urlunparse
+            # ПРОСТОЙ ФИКС: используем чистый requests без session
+            # Получаем куки из сессии как dict
+            cookies_dict = {}
+            try:
+                cookies_dict = self.session.cookies.get_dict()
+            except:
+                pass
             
-            # Декодируем если есть процентное кодирование
-            import urllib.parse as up
-            decoded_url = up.unquote(url)
+            # Базовые заголовки без русских символов
+            headers = {
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "text/html",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Accept-Encoding": "gzip, deflate",
+                "Connection": "keep-alive"
+            }
             
-            # Разбираем URL
-            parsed = urlparse(decoded_url)
+            # Добавляем Referer только если он нужен
+            if url.startswith(FORUM_BASE):
+                headers["Referer"] = FORUM_BASE
             
-            # Кодируем путь если нужно
-            if any(ord(c) > 127 for c in parsed.path):
-                encoded_path = quote(parsed.path, safe='/')
-            else:
-                encoded_path = parsed.path
-                
-            # Собираем безопасный URL
-            safe_url = urlunparse((
-                parsed.scheme,
-                parsed.netloc,
-                encoded_path,
-                parsed.params,
-                parsed.query,
-                parsed.fragment
-            ))
+            r = requests.get(url, 
+                           cookies=cookies_dict,
+                           headers=headers,
+                           timeout=timeout)
             
-            # Делаем запрос
-            r = self.session.get(safe_url, timeout=timeout, allow_redirects=True)
-            debug(f"[FETCH] {safe_url} -> {getattr(r, 'status_code', 'ERR')}")
+            debug(f"[FETCH] {url} -> {r.status_code}")
             
-            if getattr(r, "status_code", 0) == 200:
-                # Явно указываем кодировку
-                if r.encoding is None or r.encoding == 'ISO-8859-1':
-                    r.encoding = 'utf-8'
+            if r.status_code == 200:
+                r.encoding = 'utf-8'
                 return r.text
-            warn(f"HTTP {getattr(r, 'status_code', 'ERR')} for {safe_url}")
+            warn(f"HTTP {r.status_code} for {url}")
             return ""
             
-        except UnicodeEncodeError as e:
-            # ФАЛЛБЭК: используем urllib напрямую
-            warn(f"Unicode encode error: {e}")
-            try:
-                import urllib.request
-                import http.cookiejar
-                
-                # Создаем opener с куками
-                cj = http.cookiejar.CookieJar()
-                opener = urllib.request.build_opener(
-                    urllib.request.HTTPCookieProcessor(cj)
-                )
-                
-                # Добавляем куки из сессии
-                for cookie in self.session.cookies:
-                    c = http.cookiejar.Cookie(
-                        version=0,
-                        name=cookie.name,
-                        value=cookie.value,
-                        port=None,
-                        port_specified=False,
-                        domain=cookie.domain,
-                        domain_specified=bool(cookie.domain),
-                        domain_initial_dot=cookie.domain.startswith('.'),
-                        path=cookie.path,
-                        path_specified=bool(cookie.path),
-                        secure=cookie.secure,
-                        expires=cookie.expires,
-                        discard=False,
-                        comment=None,
-                        comment_url=None,
-                        rest={'HttpOnly': cookie.has_nonstandard_attr('HttpOnly')},
-                        rfc2109=False
-                    )
-                    cj.set_cookie(c)
-                
-                # Устанавливаем заголовки
-                req = urllib.request.Request(
-                    url,
-                    headers={
-                        'User-Agent': 'Mozilla/5.0',
-                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                        'Accept-Language': 'en-US,en;q=0.5'
-                    }
-                )
-                
-                response = opener.open(req, timeout=timeout)
-                html = response.read().decode('utf-8', errors='ignore')
-                return html
-                
-            except Exception as fallback_error:
-                warn(f"Fallback also failed: {fallback_error}")
-                return ""
-                
         except Exception as e:
             warn(f"fetch_html error: {e}")
             return ""
-
     def get(self, url: str, **kwargs):
         try:
             # ФИКС: применяем ту же логику для get
