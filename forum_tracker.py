@@ -368,15 +368,121 @@ class ForumTracker:
 
         debug(f"[FETCH] GET {url}")
         try:
-            r = self.session.get(url, timeout=timeout)
-            debug(f"[FETCH] {url} -> {getattr(r, 'status_code', 'ERR')}")
+            # ФИКС ДЛЯ UNICODE: чистим заголовки от русских символов
+            from urllib.parse import quote, urlparse, urlunparse
+            
+            # Декодируем если есть процентное кодирование
+            import urllib.parse as up
+            decoded_url = up.unquote(url)
+            
+            # Разбираем URL
+            parsed = urlparse(decoded_url)
+            
+            # Кодируем путь если нужно
+            if any(ord(c) > 127 for c in parsed.path):
+                encoded_path = quote(parsed.path, safe='/')
+            else:
+                encoded_path = parsed.path
+                
+            # Собираем безопасный URL
+            safe_url = urlunparse((
+                parsed.scheme,
+                parsed.netloc,
+                encoded_path,
+                parsed.params,
+                parsed.query,
+                parsed.fragment
+            ))
+            
+            # Делаем запрос
+            r = self.session.get(safe_url, timeout=timeout, allow_redirects=True)
+            debug(f"[FETCH] {safe_url} -> {getattr(r, 'status_code', 'ERR')}")
+            
             if getattr(r, "status_code", 0) == 200:
+                # Явно указываем кодировку
+                if r.encoding is None or r.encoding == 'ISO-8859-1':
+                    r.encoding = 'utf-8'
                 return r.text
-            warn(f"HTTP {getattr(r, 'status_code', 'ERR')} for {url}")
+            warn(f"HTTP {getattr(r, 'status_code', 'ERR')} for {safe_url}")
             return ""
+            
+        except UnicodeEncodeError as e:
+            # ФАЛЛБЭК: используем urllib напрямую
+            warn(f"Unicode encode error: {e}")
+            try:
+                import urllib.request
+                import http.cookiejar
+                
+                # Создаем opener с куками
+                cj = http.cookiejar.CookieJar()
+                opener = urllib.request.build_opener(
+                    urllib.request.HTTPCookieProcessor(cj)
+                )
+                
+                # Добавляем куки из сессии
+                for cookie in self.session.cookies:
+                    c = http.cookiejar.Cookie(
+                        version=0,
+                        name=cookie.name,
+                        value=cookie.value,
+                        port=None,
+                        port_specified=False,
+                        domain=cookie.domain,
+                        domain_specified=bool(cookie.domain),
+                        domain_initial_dot=cookie.domain.startswith('.'),
+                        path=cookie.path,
+                        path_specified=bool(cookie.path),
+                        secure=cookie.secure,
+                        expires=cookie.expires,
+                        discard=False,
+                        comment=None,
+                        comment_url=None,
+                        rest={'HttpOnly': cookie.has_nonstandard_attr('HttpOnly')},
+                        rfc2109=False
+                    )
+                    cj.set_cookie(c)
+                
+                # Устанавливаем заголовки
+                req = urllib.request.Request(
+                    url,
+                    headers={
+                        'User-Agent': 'Mozilla/5.0',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.5'
+                    }
+                )
+                
+                response = opener.open(req, timeout=timeout)
+                html = response.read().decode('utf-8', errors='ignore')
+                return html
+                
+            except Exception as fallback_error:
+                warn(f"Fallback also failed: {fallback_error}")
+                return ""
+                
         except Exception as e:
             warn(f"fetch_html error: {e}")
             return ""
+
+    def get(self, url: str, **kwargs):
+        try:
+            # ФИКС: применяем ту же логику для get
+            from urllib.parse import quote, urlparse, urlunparse
+            parsed = urlparse(url)
+            if any(ord(c) > 127 for c in parsed.path):
+                encoded_path = quote(parsed.path, safe='/')
+                url = urlunparse((
+                    parsed.scheme,
+                    parsed.netloc,
+                    encoded_path,
+                    parsed.params,
+                    parsed.query,
+                    parsed.fragment
+                ))
+            return self.session.get(url, **kwargs)
+        except Exception as e:
+            warn(f"session.get error: {e}")
+            raise
 
     def get(self, url: str, **kwargs):
         try:
