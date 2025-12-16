@@ -260,101 +260,70 @@ def parse_forum_topics(html: str, base_url: str) -> List[Dict]:
 
 
 class ForumTracker:
-   
+   def __init__(self, vk, user_data: dict):
+        """
+        vk        — объект VK-бота
+        user_data — данные конкретного пользователя
+        """
 
-    def __init__(self, *args):
+        # --- базовые поля ---
+        self.vk = vk
+        self.user_id = user_data.get("user_id")
+
         self.interval = POLL
+
         self._running = False
         self._keepalive_running = True
-        self.vk = None
-        self.user_id = None  # Добавляем user_id для привязки к пользователю
 
+        # --- отдельная session на пользователя ---
         self.session = requests.Session()
         self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "User-Agent": f"ForumTracker/{self.user_id}",
             "Accept": "*/*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate",
-            "Referer": FORUM_BASE,
-            "Connection": "Keep-alive"
+            "Referer": FORUM_BASE
         })
 
-        # Новый вариант для инициализации через auth_manager
-        if len(args) == 1 and isinstance(args[0], dict):
-            # args[0] - словарь с данными пользователя
-            user_data = args[0]
-            self.user_id = user_data.get("user_id")
-            
-            # Устанавливаем куки из данных пользователя
-            if user_data.get("xf_user"):
-                self.session.cookies.set("xf_user", user_data["xf_user"])
-            if user_data.get("xf_tfa_trust"):
-                self.session.cookies.set("xf_tfa_trust", user_data["xf_tfa_trust"])
-            if user_data.get("xf_session"):
-                self.session.cookies.set("xf_session", user_data["xf_session"])
-            if user_data.get("xf_csrf"):
-                self.session.cookies.set("xf_csrf", user_data["xf_csrf"])
+        # --- cookies пользователя ---
+        domain = None
+        try:
+            domain = FORUM_BASE.replace("https://", "").replace("http://", "").split("/")[0]
+        except Exception:
+            pass
 
-     
-        if len(args) == 1:
-            self.vk = args[0]
-     
-            for k, v in build_cookies().items():
-                if v:
-                    try:
-                        self.session.cookies.set(k, v)
-                    except Exception:
-                        try:
-                            domain = FORUM_BASE.replace("https://", "").replace("http://", "").split("/")[0]
-                            self.session.cookies.set(k, v, domain=domain)
-                        except Exception:
-                            pass
-
-
-        elif len(args) >= 4:
-            xf_user, xf_tfa_trust, xf_session, vk = args[:4]
-            self.vk = vk
-            globals()["XF_USER"] = xf_user
-            globals()["XF_TFA_TRUST"] = xf_tfa_trust
-            globals()["XF_SESSION"] = xf_session
-         
-            domain = ""
-            try:
-                domain = FORUM_BASE.replace("https://", "").replace("http://", "").split("/")[0]
-            except Exception:
-                domain = None
-            if xf_user:
+        for name in ("xf_user", "xf_session", "xf_tfa_trust", "xf_csrf"):
+            value = user_data.get(name)
+            if value:
                 try:
-                    self.session.cookies.set("xf_user", xf_user, domain=domain)
+                    self.session.cookies.set(name, value, domain=domain)
                 except Exception:
-                    self.session.cookies.set("xf_user", xf_user)
-            if xf_tfa_trust:
-                try:
-                    self.session.cookies.set("xf_tfa_trust", xf_tfa_trust, domain=domain)
-                except Exception:
-                    self.session.cookies.set("xf_tfa_trust", xf_tfa_trust)
-            if xf_session:
-                try:
-                    self.session.cookies.set("xf_session", xf_session, domain=domain)
-                except Exception:
-                    self.session.cookies.set("xf_session", xf_session)
-        else:
-            raise TypeError("ForumTracker expected (vk) or (XF_USER, XF_TFA_TRUST, XF_SESSION, vk)")
+                    self.session.cookies.set(name, value)
 
-    
+        # --- антифлуд ---
+        self._last_fetch = 0
+
+        # --- триггер ручной проверки ---
         if hasattr(self.vk, "set_trigger"):
             try:
                 self.vk.set_trigger(self.force_check)
             except Exception:
                 pass
 
-    
-        threading.Thread(target=self._keepalive_loop, daemon=True).start()
+        # --- keep-alive поток ---
+        threading.Thread(
+            target=self._keepalive_loop,
+            daemon=True
+        ).start()
+
 
     # -----------------------------------------------------------------
     # Утилиты доступа к сети через session
     # -----------------------------------------------------------------
     def fetch_html(self, url: str, timeout: int = 15) -> str:
+        """
+        Загружает HTML страницы форума
+        с антифлудом и cookies конкретного пользователя
+        """
+
         if not url:
             return ""
 
@@ -363,45 +332,30 @@ class ForumTracker:
         except Exception:
             pass
 
+        # --- антифлуд ---
+        now = time.time()
+        delta = now - self._last_fetch
+        if delta < 3:
+            time.sleep(3 - delta)
+
+        self._last_fetch = time.time()
+
         debug(f"[FETCH] GET {url}")
+
         try:
-            # ПРОСТОЙ ФИКС: используем чистый requests без session
-            # Получаем куки из сессии как dict
-            cookies_dict = {}
-            try:
-                cookies_dict = self.session.cookies.get_dict()
-            except:
-                pass
-            
-            # Базовые заголовки без русских символов
-            headers = {
-                "User-Agent": "Mozilla/5.0",
-                "Accept": "text/html",
-                "Accept-Language": "en-US,en;q=0.5",
-                "Accept-Encoding": "gzip, deflate",
-                "Connection": "keep-alive"
-            }
-            
-            # Добавляем Referer только если он нужен
-            if url.startswith(FORUM_BASE):
-                headers["Referer"] = FORUM_BASE
-            
-            r = requests.get(url, 
-                           cookies=cookies_dict,
-                           headers=headers,
-                           timeout=timeout)
-            
-            debug(f"[FETCH] {url} -> {r.status_code}")
-            
+            r = self.session.get(url, timeout=timeout)
+            debug(f"[FETCH] {url} -> {getattr(r, 'status_code', 'ERR')}")
+
             if r.status_code == 200:
-                r.encoding = 'utf-8'
                 return r.text
+
             warn(f"HTTP {r.status_code} for {url}")
             return ""
-            
+
         except Exception as e:
             warn(f"fetch_html error: {e}")
             return ""
+
     def get(self, url: str, **kwargs):
         try:
             # ФИКС: применяем ту же логику для get
@@ -564,15 +518,18 @@ class ForumTracker:
         rows = list_all_tracks()
         if not rows:
             return
-        by_url = {}
+
         for peer_id, url, typ, last_id in rows:
-            by_url.setdefault(url, []).append((peer_id, typ, last_id))
-        for url, subs in by_url.items():
+         # ❗ ФИЛЬТРАЦИЯ ПО user_id
+            if self.user_id is not None and peer_id != self.user_id:
+                continue
+
             try:
-                self._process_url(url, subs)
+                self._process_url(url, [(peer_id, typ, last_id)])
+                time.sleep(3)  # ❗ антифлуд
             except Exception as e:
                 warn(f"_process_url error for {url}: {e}")
-                traceback.print_exc()
+
 
 
     def _process_url(self, url: str, subscribers):
